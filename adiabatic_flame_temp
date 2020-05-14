@@ -1,0 +1,309 @@
+clear;
+clc;
+%% Calculate adiabatic flame temperature of hydrogen-air flames
+%Set temperature guesses for different equivalence ratios
+
+phis=0.7:0.01:1.4; %Equivalence ratios
+T_guesses =[linspace(2000,2500,length(phis)/2+1),linspace(2500,2300,length(phis)/2+1)];
+
+%Initial guess for product composition
+st_coef=ones(9,length(phis))*0.5;
+
+ps = [2,20]; %%Pressures in atm to use
+p_atm = 101325; %Conversion atm->Pa
+isCpConsts = [false,true]; %%Boolean vector for Cp Calculation
+premixT = phis;
+
+a = 1; %amount of H2 in mol, usally set to 1mol
+
+%load tables from tables.m
+tables;
+
+%Allocate Temperature vector
+T=zeros(length(phis),1);
+
+%Figure to show adiabatic flame temperature for all cases except Neon
+f1 = figure;
+hold on
+set(gca,'linestyleorder',{'-',':','-.','--','*','+'},'FontSize',14,'nextplot','add')
+title('Adiabatic flame temperature')
+
+%Figure to show NO concentrations for all cases including Neon
+f2 = figure;
+hold on
+set(gca,'linestyleorder',{'-',':','-.','--','*','+'},'FontSize',14,'nextplot','add')
+title('NO concentrations')
+
+%Note: other figures (for product composition) are dynamically created
+
+%%Loops
+for CpConstind = 1:length(isCpConsts) %Calculate with variable Cp and Cp=const
+    isCpConst = isCpConsts(CpConstind);
+for pind = 1:length(ps) %Calculate with pressures set in ps
+    p = ps(pind);
+for i=1:1:length(phis) %Use equivalence ratios set in phis
+    %Initialize reactant mole numbers
+    b = a*0.21/(0.42*phis(i)); %Initial Oxygen mole number
+    c = a*0.79/(0.42*phis(i)); %Initial Nitrogen mole number
+    n = 0; %Initial Neon mole number
+    prodpremix =  [0,a,b,c,0,0,0,0,0];
+    premixT(i) = flameTemp(a,b,c,prodpremix);
+        if(i==1)
+            st_guess=st_coef(:,1);
+        else
+            st_guess=st_coef(:,i-1); 
+            %Use composition of previous calculation as initial guess
+        end
+        st_guess(9)=n;
+    
+    %Calculate Adiabatic flame temperature and equilibrium composition
+    [T(i),st_coef(:,i)] = ...
+        calcAdiabaticTcomposition(T_guesses(i),st_guess,phis(i),p,a,b,c,n,isCpConst);
+    
+end
+isCpConst
+p
+res = [phis' premixT' T/1000 (st_coef./sum(st_coef,1))']
+%Fill Adiabatic flame temperature plot
+figure(f1);
+plot(phis,T,'LineWidth',2);
+xlabel('\phi')
+ylabel('T [K]')
+
+%Create and fill composition plot for this pressure and cp method
+figure
+title(join(['Composition at ', num2str(p),' atm']))
+set(gca,'linestyleorder',{'-',':','-.','--','*','+'},'FontSize',14,'nextplot','add')
+hold on
+for i=1:size(st_coef,1)
+    plot(phis,st_coef(i,:)./sum(st_coef,1),'LineWidth',2)
+end
+axis([0.7,1.5,0,0.7])
+xlabel('\phi')
+ylabel('x')
+legend('H_2O','H_2', 'O_2', 'N_2', 'O', 'H', 'OH', 'NO', 'Ne')
+
+%Fill NO concentration plot
+figure(f2);
+plot(phis,st_coef(8,:),'LineWidth',2);
+xlabel('\phi')
+ylabel('xNO')
+end
+end
+
+%Apply labels to plots
+figure(f1)
+legend('2 atm', '20 atm', '2 atm cp const',  '20 atm cp const')
+figure(f2);
+legend('2 atm', '20 atm', '2 atm cp const',  '20 atm cp const')
+
+%% Add Neon to flame to reduce stochiometric combustion temperature to
+%  flame temperature of phi=0.75
+
+%Calculate Temperature and composition at p=20atm xNe = 0 and phi=0.75
+b = a*0.21/(0.42*0.75);
+c = a*0.79/(0.42*0.75);
+n = 0;
+p = 20;
+st_guess(9,1)=n;
+[T075,st_coef075] = calcAdiabaticTcomposition(2100,st_coef(:,1),0.75,p,a,b,c,n,false);
+
+%Stochiometric combustion
+b = a*0.21/(0.42); %Initial Oxygen mole number
+c = a*0.79/(0.42); %Initial Nitrogen mole number
+
+%Initialize values for bisection method
+nguess1 = 0;
+nguess2 = 10;
+st_guess = st_coef(:,round(length(T_guesses)/2));
+st_guess(9)=nguess1;
+[T1,st_guess1] = calcAdiabaticTcomposition(T(4),st_guess,1,p,a,b,c,nguess1,false);
+st_guess(9)=nguess2;
+[T2,st_guess2] = calcAdiabaticTcomposition(T(4),st_guess,1,p,a,b,c,nguess2,false);
+assert((T1-T075)*(T2-T075)<0)
+%Bisection loop checks wether T has converged to the Temperature for
+%phi=0.75
+while abs(T075-T)>0.1
+    %Get good initial guesses for mid-point
+    nguess = 0.5*(nguess1+nguess2);
+    Tguess=0.5*(T1+T2);
+    st_guess = 0.5*(st_guess1+st_guess2);
+    st_guess(9)=nguess;
+    
+    %Calculate mid-point
+    [T,st_coef1] = calcAdiabaticTcomposition(Tguess,st_guess,1,p,a,b,c,nguess,false);
+    
+    %If sign change in first half of interval, use that as new interval
+    %else use other interval as new interval. Update guesses accordingly
+    if (T1-T075)*(T-T075)<0
+        nguess2=nguess;
+        st_guess2=st_coef1;
+        T2=T;
+    else
+        nguess1=nguess;
+        st_guess1=st_coef1;
+        T1=T;
+    end
+end
+%Add Neon case to NO plot
+figure(f2);
+plot(1,st_coef1(8)/sum(st_coef1),'x','Linewidth',1,'MarkerSize',15);
+legend('2 atm', '20 atm', '2 atm cp const',  '20 atm cp const', '20 atm with Neon')
+
+%% Function definitions
+function [T_new,st_coef] = ...
+        calcAdiabaticTcomposition(T_guess,st_guess,phi,p,a,b,c,n,isCpConst)
+    %% Iterates through mixture composition and temperature
+    T_new = T_guess;
+    T_old = T_new-50; %make sure first iteration starts
+    
+    iter=0;
+    tol = 0.1; %Tolerance for iteration stop
+    while(abs(T_new - T_old)>tol)
+        % solve system for stochiometric coefficients        
+        st_coef = solvesystem(T_new,p,a,b,c,n,st_guess);
+        T_old=T_new;
+        %Choose Cp calculation method
+        if isCpConst
+            T_new=flameTempCpConst(a,b,c,st_coef);
+        else
+            T_new=flameTemp(a,b,c,st_coef);
+        end
+        iter = iter+1;
+    end
+    
+%     fprintf('Flame temperature for phi=%.1f calculated in %d iterations. T=%.2f K\n',...
+%         phi,iter,T_new);
+%     fprintf(join(['Final composition: xH20=%.4f, xH2=%.4f, xO2=%.4f, xN2=%.4f, '...
+%         'xO=%.4f, xH=%.4f, xOH=%.4f, xNO=%.4f\n, xNe=%.4f\n'])...
+%             ,st_coef(1)/sum(st_coef),st_coef(2)/sum(st_coef),...
+%             st_coef(3)/sum(st_coef),st_coef(4)/sum(st_coef)...
+%             ,st_coef(5)/sum(st_coef),st_coef(6)/sum(st_coef),...
+%             st_coef(7)/sum(st_coef),st_coef(8)/sum(st_coef),st_coef(9)/sum(st_coef));
+
+end
+
+function st_coef = solvesystem(T,p,a,b,c,n,guess)
+    %% Function to solve for chemical equilibrium at a specified temperature
+    options=optimset('Display','none','LargeScale',...
+        'off','MaxIter',100000,'MaxFunEvals',100000);
+    st_coef=fsolve(@myfun, guess,options);%,options
+
+        function F = myfun(st_coef)
+            global T_H20 KP_H20 T_OH KP_OH T_H KP_H T_O KP_O T_NO KP_NO;
+            %% Species balance equations with Kps
+            F(1) = 10^(interp1(T_H20,KP_H20,T))*sqrt(p)...
+                -st_coef(1)/st_coef(2)*sqrt(sum(st_coef)/st_coef(3));
+            F(2) = 10^(interp1(T_OH,KP_OH,T))-st_coef(7)/sqrt(st_coef(2)*st_coef(3));
+            F(3) = 10^(interp1(T_H,KP_H,T))/sqrt(p)...
+                -st_coef(6)/sqrt(st_coef(2)*sum(st_coef));
+            F(4) = 10^(interp1(T_O,KP_O,T))/sqrt(p)...
+                -st_coef(5)/sqrt(st_coef(3)*sum(st_coef));
+            F(5) = 10^(interp1(T_NO,KP_NO,T))-st_coef(8)/sqrt(st_coef(4)*st_coef(3));
+            F(6) = 2*st_coef(1)+2*st_coef(2)+st_coef(6)+st_coef(7)-2*a;
+            F(7) = st_coef(1)+2*st_coef(3)+st_coef(5)+st_coef(7)+st_coef(8)-2*b;
+            F(8) = 2*st_coef(4)+st_coef(8)-2*c;
+            F(9) = n-st_coef(9);
+        end
+end
+
+function T_new = flameTemp(a,b,c,prod)
+    %% Calculates flame temperature from given reactant and product compositions
+    global Hf_H20 Hf_OH Hf_NO Hf_O Hf_H
+    global cp_H20 cp_OH cp_NO cp_H2 cp_O2 cp_N2 cp_H cp_O cp_Ne
+    global T_H20 T_O2 T_H2 T_N2 T_Ne
+
+    %State change of educts to reference condition
+    RHS = a*trapz(T_H2(find(T_H2==298.15):find(T_H2==300)),...
+        cp_H2(find(T_H2==298.15):find(T_H2==300))) ...
+        + b*trapz(T_O2(find(T_O2==298.15):find(T_O2==600)),...
+        cp_O2(find(T_O2==298.15):find(T_O2==600))) ...
+        + c*trapz(T_N2(find(T_N2==298.15):find(T_N2==600)),...
+        cp_N2(find(T_N2==298.15):find(T_N2==600))) ...
+        + prod(end)*trapz(T_Ne(find(T_Ne==298.15):find(T_Ne==600)),...
+        cp_Ne(find(T_Ne==298.15):find(T_Ne==600)));
+
+    %Heats of formation
+    RHS = RHS -1000*(prod(1)*Hf_H20+prod(5)*Hf_O+prod(6)* ...
+        Hf_H+prod(7)*Hf_OH+prod(8)*Hf_NO);
+
+    %% calculate T_new
+
+    %Adapt H20 to fit table format
+    T_H20_new=[T_H20(1:find(T_H20==200)) 250 ...
+         298.15 300 350 400 450 T_H20(find(T_H20==500):end)];
+    cp_H20_new=[cp_H20(1:find(T_H20==200)) interp1(T_H20,cp_H20,250) ...
+        cp_H20(T_H20==298.15) ...
+        cp_H20(T_H20==300) interp1(T_H20,cp_H20,350) cp_H20(T_H20==400)...
+        interp1(T_H20,cp_H20,450) cp_H20(find(T_H20==500):end)];
+
+    cp=[T_H20_new',cp_H20_new', cp_H2', cp_O2', cp_N2',...
+         cp_O', cp_H', cp_OH', cp_NO', cp_Ne'];
+    
+    %Calculate cumulative heats for different temperatures
+    LHS = 0;
+    for i=1:1:length(prod)
+        LHS = LHS + prod(i)*(cumtrapz(cp(:,1),cp(:,i+1))-trapz(cp(1:find(T_H20==298.15)+1,1),cp(1:find(T_H20==298.15)+1,i+1)));
+    end
+
+    %Find zero-crossing of both sides
+    err = LHS - RHS*ones(length(LHS),1);
+    index=find(err>0);
+    index=index(1);
+    %assert(LHS(index-1)<RHS && LHS(index)>RHS)
+    
+    %determine end temperature using linear interpolation between table
+    %values
+    tcoeff=0;
+    for i=1:1:length(prod)
+        tcoeff = tcoeff + 0.5 * prod(i)*(cp(index,i+1)+cp(index+1,i+1));
+    end
+    fn=@(x) err(index)+x*tcoeff;
+    %assert(fzero(fn,T_H20_new(index-1))<100)
+    
+    T_new=T_H20_new(index)+fzero(fn,T_H20_new(index));
+end
+
+function T_new = flameTempCpConst(a,b,c,prod)
+
+    global Hf_H20 Hf_OH Hf_NO Hf_O Hf_H
+    global cp_H20 cp_OH cp_NO cp_H2 cp_O2 cp_N2 cp_H cp_O cp_Ne
+    global T_H20 T_O2 T_H2 T_N2 T_Ne T_O T_H T_OH T_NO
+
+    %%Average over cps from 298.15K to Tmax to get constant Cps
+    Tmax = 2500;
+    cp_N2const =  trapz(T_N2(find(T_N2==298.15):find(T_N2==Tmax)),...
+        cp_N2(find(T_N2==298.15):find(T_H2==Tmax)))/(Tmax-298.15);
+    cp_H2const = trapz(T_H2(find(T_H2==298.15):find(T_H2==Tmax)),...
+        cp_H2(find(T_H2==298.15):find(T_H2==Tmax)))/(Tmax-298.15);
+    cp_O2const =  trapz(T_O2(find(T_O2==298.15):find(T_O2==Tmax)),...
+        cp_O2(find(T_O2==298.15):find(T_H2==Tmax)))/(Tmax-298.15);
+    cp_H20const =  trapz(T_N2(find(T_N2==298.15):find(T_N2==Tmax)),...
+        cp_N2(find(T_H2==298.15):find(T_N2==Tmax)))/(Tmax-298.15);
+    cp_OHconst = trapz(T_OH(find(T_OH==298.15):find(T_OH==Tmax)),...
+        cp_OH(find(T_OH==298.15):find(T_OH==Tmax)))/(Tmax-298.15);
+    cp_Oconst = trapz(T_O(find(T_O==298.15):find(T_O==Tmax)),...
+        cp_O(find(T_O==298.15):find(T_O==Tmax)))/(Tmax-298.15);
+    cp_Hconst = trapz(T_H(find(T_H==298.15):find(T_H==Tmax)),...
+        cp_H(find(T_H==298.15):find(T_H==Tmax)))/(Tmax-298.15);
+    cp_NOconst = trapz(T_NO(find(T_NO==298.15):find(T_NO==Tmax)),...
+        cp_NO(find(T_NO==298.15):find(T_NO==Tmax)))/(Tmax-298.15);
+    cp_Neconst = cp_Ne(1);
+
+    %State change of educts to reference condition
+    RHS = a*cp_H2const*(300-298.15) ...
+        + b*cp_O2const*(600-298.15) ...
+        + c*cp_N2const*(600-298.15) ...
+        + prod(end)*cp_Neconst*(300-298.15);
+
+    %Heats of formation
+    RHS = RHS -1000*(prod(1)*Hf_H20+prod(5)*Hf_O+...
+        prod(6)*Hf_H+prod(7)*Hf_OH+prod(8)*Hf_NO);
+
+    % calculate T_new
+    cp=[cp_H20const, cp_H2const, cp_O2const, cp_N2const, ...
+        cp_Oconst, cp_Hconst, cp_OHconst, cp_NOconst, cp_Neconst];
+    cpmix = cp*prod;
+
+    T_new = RHS/cpmix;
+end
